@@ -79,7 +79,9 @@ for sensor in sensor_config:
 wifi = WiFi()
 
 # Connect to the WiFi
-wifi.connect(config.SSID, config.PSK)
+while not wifi.connect(config.SSID, config.PSK):
+	Logger.print("Initial connect failed, retrying...")
+	sleep(5)
 
 # Initialise the feed URL
 if hasattr(config, "BASE_URL") and config.BASE_URL and hasattr(config, "FEED_ID") and config.FEED_ID:
@@ -102,7 +104,7 @@ while True:
 	wifi.try_reconnect_if_lost()
 
 	# Loop through the sensors getting the current temperatures
-	sensors = temperature_sensor.get_temperature()
+	sensors = temperature_sensor.get_temperatures()
 
 	# Initialise the API payload dictionary
 	payload = {}
