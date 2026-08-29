@@ -1,6 +1,8 @@
 SSID = "wifi-ssid-goes-here"
 PSK = "wifi-password-goes-here"
 GPIO_PIN = 15
+WIFI_CONNECT_TIMEOUT = 30 # seconds to wait per connect attempt before giving up
+WDT_TIMEOUT_MS = 16000    # RP2040 hardware WDT max is ~8388ms, RP2350 is double at ~16777ms. 0 to disable WDT.
 UDP_PORT = 9999
 MCAST_GROUP = "239.0.0.1"
 SLEEP = 10

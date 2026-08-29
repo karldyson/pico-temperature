@@ -19,7 +19,7 @@ import json
 import socket
 import config
 import requests
-from machine import Pin
+from machine import Pin, WDT
 
 ## Sub routines ##
 
@@ -27,24 +27,45 @@ def multicast(message_dict):
 	# ...and encode it into JSON
 	message = json.dumps(message_dict)
 
-	# create the UDP socket
-	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	sock = None
 
-	# ...and turn it into a multicast packet
-	if hasattr(socket, "IP_MULTICAST_TTL"):
-		sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+	try:
 
-	# send the packet to the network
-	sock.sendto(message, (config.MCAST_GROUP, config.UDP_PORT))
-	Logger.print(f"sent multicast to {config.MCAST_GROUP}:{config.UDP_PORT} :: {message}")
+		# create the UDP socket
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-	# ...and close the socket
-	sock.close()
+		# ...and turn it into a multicast packet
+		if hasattr(socket, "IP_MULTICAST_TTL"):
+			sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+
+		# send the packet to the network
+		sock.sendto(message, (config.MCAST_GROUP, config.UDP_PORT))
+		Logger.print(f"sent multicast to {config.MCAST_GROUP}:{config.UDP_PORT} :: {message}")
+	except OSError as e:
+		Logger.print(f"multicast send failed: {e}")
+	finally:
+		if sock is not None:
+			try:
+				# ...and close the socket
+				sock.close()
+			except OSError:
+				pass
+
 	# end of multicast
 
 ## Main code ##
 
 led = Pin("LED", Pin.OUT)
+
+# Hardware watchdog: if the loop below ever stalls for longer than this
+# without feeding it, the board resets itself. Last-resort recovery for
+# a wedged Wi-Fi driver or any other unforeseen hang.
+if config.WDT_TIMEOUT_MS > 0:
+	wdt = WDT(timeout=config.WDT_TIMEOUT_MS)
+	Logger.print(f"WDT initialised to {config.WDT_TIMEOUT_MS}ms")
+else:
+	wdt = None
+	Logger.print(f"WDT disabled (timeout is {config.WDT_TIMEOUT_MS})")
 
 # initialise a temperature sensor object
 temperature_sensor = TemperatureSensor(config.GPIO_PIN)
@@ -79,9 +100,11 @@ for sensor in sensor_config:
 wifi = WiFi()
 
 # Connect to the WiFi
-while not wifi.connect(config.SSID, config.PSK):
+while not wifi.connect(config.SSID, config.PSK, timeout=config.WIFI_CONNECT_TIMEOUT, wdt=wdt):
 	Logger.print("Initial connect failed, retrying...")
 	sleep(5)
+	if wdt is not None:
+		wdt.feed()
 
 # Initialise the feed URL
 if hasattr(config, "BASE_URL") and config.BASE_URL and hasattr(config, "FEED_ID") and config.FEED_ID:
@@ -97,11 +120,14 @@ headers = {'api-key': config.API_KEY}
 # ...and start the main loop
 Logger.print("Starting main loop...")
 while True:
+	if wdt is not None:
+		wdt.feed()
+
 	# Turn the LED on so we have some external indication of progress
 	led.on()
 
 	# Check we're still connected to the wifi...
-	wifi.try_reconnect_if_lost()
+	wifi.try_reconnect_if_lost(timeout=config.WIFI_CONNECT_TIMEOUT, wdt=wdt)
 
 	# Loop through the sensors getting the current temperatures
 	sensors = temperature_sensor.get_temperatures()
@@ -156,6 +182,15 @@ while True:
 	# ...and sleep
 	Logger.print(f"Sleeping for {config.SLEEP} seconds")
 	led.off()
-	sleep(config.SLEEP)
+	# Sleep in small increments, feeding the watchdog each time, since
+	# config.SLEEP may exceed the hardware watchdog's max timeout.
+	remaining = config.SLEEP
+	while remaining > 0:
+		if wdt is not None:
+			wdt.feed()
+
+		chunk = min(1, remaining)
+		sleep(chunk)
+		remaining -= chunk
 
 # vim: noet ts=4
