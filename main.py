@@ -55,6 +55,11 @@ def multicast(message_dict):
 
 ## Main code ##
 
+# Bump this by hand whenever main.py or a deployed itk_pico/*.py file
+# changes, before redeploying to units. Sent in every UDP message so
+# unit versions can be tracked without consoling into each device.
+VERSION = "1.0.0"
+
 led = Pin("LED", Pin.OUT)
 
 # Hardware watchdog: if the loop below ever stalls for longer than this
@@ -151,7 +156,7 @@ while True:
 		Logger.print(f"Sensor: {sensor}; Name: {sensor_name}; Offset: {sensor_offset}; Temp: {temperature}")
 
 		# create the UDP message dictionary
-		message_dict = {"type": "temperature", "name": sensor_name, "sensor": sensor, "temperature": temperature, "offset": sensor_offset}
+		message_dict = {"type": "temperature", "name": sensor_name, "sensor": sensor, "temperature": temperature, "offset": sensor_offset, "version": VERSION}
 
 		# and multicast it
 		multicast(message_dict)
@@ -172,10 +177,10 @@ while True:
 		try:
 			response = requests.post(feed_url, headers=headers, data=json.dumps(payload), timeout=5)
 			Logger.print(f"API response: {response.status_code} {response.text}")
-			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API {response.status_code} {response.text}"}
+			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API {response.status_code} {response.text}", "version": VERSION}
 		except:
 			Logger.print("Exception occurred in API call")
-			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API Exception"}
+			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API Exception", "version": VERSION}
 		finally:
 			multicast(message_dict)
 
