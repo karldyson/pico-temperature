@@ -58,7 +58,7 @@ def multicast(message_dict):
 # Bump this by hand whenever main.py or a deployed itk_pico/*.py file
 # changes, before redeploying to units. Sent in every UDP message so
 # unit versions can be tracked without consoling into each device.
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 led = Pin("LED", Pin.OUT)
 
