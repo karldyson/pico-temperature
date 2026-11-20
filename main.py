@@ -26,7 +26,6 @@ from time import sleep
 import json
 import os
 import socket
-import requests
 from machine import Pin, I2C, WDT
 
 # itk_pico (Wi-Fi) still logs via its own Logger; keep it in step with
@@ -162,7 +161,7 @@ def resolve(sensor_id, fallback_name=None):
 # Bump this by hand whenever main.py or a deployed itk_pico/*.py or
 # kdmp/*.py file changes, before redeploying to units. Sent in every UDP
 # message so unit versions can be tracked without consoling into each device.
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 # MicroPython release, also sent in every UDP message
 FW = os.uname().release
@@ -199,17 +198,6 @@ while not wifi.connect(config.SSID, config.PSK, timeout=config.WIFI_CONNECT_TIME
 	if wdt is not None:
 		wdt.feed()
 
-# Initialise the feed URL
-if hasattr(config, "BASE_URL") and config.BASE_URL and hasattr(config, "FEED_ID") and config.FEED_ID:
-	feed_url = config.BASE_URL + config.FEED_ID
-	_log.info("Feed URL: %s", feed_url)
-else:
-	FEED_ENABLED = False
-	_log.info("No feed details, disabling feed")
-
-# Initialise the API headers
-headers = {'api-key': config.API_KEY}
-
 # ...and start the main loop
 _log.info("Starting main loop...")
 while True:
@@ -222,10 +210,6 @@ while True:
 	# Check we're still connected to the wifi...
 	wifi.try_reconnect_if_lost(timeout=config.WIFI_CONNECT_TIMEOUT, wdt=wdt)
 
-	# Initialise the API payload dictionary
-	payload = {}
-	payload["data"] = {}
-
 	for driver, fallback_name in drivers:
 		if wdt is not None:
 			wdt.feed()
@@ -234,40 +218,19 @@ while True:
 			sensor_id = reading["sensor"]
 			cfg = resolve(sensor_id, fallback_name)
 
-			# apply the fudge factor(s) to the received values
-			temperature = reading["temperature"] + cfg["offset"]
+			# apply the fudge factor(s) to the received values; round after
+			# the addition so packets don't carry float noise
+			temperature = round(reading["temperature"] + cfg["offset"], 2)
 
 			message_dict = {"type": "reading", "model": reading["model"], "name": cfg["name"], "sensor": sensor_id, "temperature": temperature, "offset": cfg["offset"], "fw": FW, "version": VERSION}
 
 			if "humidity" in reading:
-				message_dict["humidity"] = reading["humidity"] + cfg["rh_offset"]
+				message_dict["humidity"] = round(reading["humidity"] + cfg["rh_offset"], 2)
+				message_dict["rh_offset"] = cfg["rh_offset"]
 
 			_log.debug("Sensor: %s; Name: %s; Temp: %s; RH: %s", sensor_id, cfg["name"], temperature, message_dict.get("humidity"))
 
 			# and multicast it
-			multicast(message_dict)
-
-			# add to API payload
-			payload["data"][cfg["name"]] = []
-			payload["data"][cfg["name"]].append({"value": '{0:.2f}'.format(reading["temperature"])})
-
-	# if the feed is enabled, send the payload to the API endpoint
-	if config.FEED_ENABLED:
-
-		feed_url = "http://iotplotter.com/api/v2/feed/" + config.FEED_ID
-		_log.debug("Feed URL is %s", feed_url)
-
-		json_payload = json.dumps(payload)
-		_log.debug("JSON payload is |%s|", json_payload)
-
-		try:
-			response = requests.post(feed_url, headers=headers, data=json.dumps(payload), timeout=5)
-			_log.info("API response: %s %s", response.status_code, response.text)
-			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API {response.status_code} {response.text}", "version": VERSION}
-		except:
-			_log.warning("Exception occurred in API call")
-			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API Exception", "version": VERSION}
-		finally:
 			multicast(message_dict)
 
 	# ...and sleep

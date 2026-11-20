@@ -13,11 +13,6 @@ MCAST_GROUP = "239.0.0.1"
 
 SLEEP = 10
 
-BASE_URL = "http://iotplotter.com/api/v2/feed/"
-API_KEY = "api-key-goes-here"
-FEED_ID = "feed-id-goes-here"
-FEED_ENABLED = False
-
 # Per-sensor names and calibration offsets, keyed by sensor ID: the
 # DS18B20 ROM code, or the SHT3x serial (check the log on first boot
 # for the ID). "offset" is in degrees C; "rh_offset" is in %RH

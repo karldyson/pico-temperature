@@ -2,7 +2,7 @@
 
 ## Project overview
 
-MicroPython firmware for a Raspberry Pi Pico W (or Pico 2 W). Reads DS18B20 1-Wire temperature sensors and/or an SHT3x I2C temperature + humidity sensor, broadcasts readings as JSON over UDP multicast, and optionally POSTs them to an IoTPlotter feed (the feed, `PICO_NAME` and `FEED_ENABLED` are due to be removed).
+MicroPython firmware for a Raspberry Pi Pico W (or Pico 2 W). Reads DS18B20 1-Wire temperature sensors and/or an SHT3x I2C temperature + humidity sensor and broadcasts the readings as JSON over UDP multicast. The firmware has no HTTP or cloud output. Forwarding to services such as IoTPlotter, Prometheus or a database is the job of a separate receiver that listens for the packets (the built-in IoTPlotter feed was removed in 2.1.0).
 
 **Direction: moving from `itk_pico` to `kdmp`.** `kdmp` is the author's own reusable MicroPython package, included as a submodule. It isn't tied to any particular board and targets both the Pico and the ESP32. The author is migrating so that the code can run on more kinds of board and so that the author controls the architectural choices. That isn't a criticism of `itk_pico`: thanks to Eugene Tkachenko, whose framework inspired this project and was its starting point. New reusable code (sensor drivers, logging, and later Wi-Fi/UDP/networking) goes into `kdmp`, never into `itk_pico`, and must not import from `itk_pico`. `itk_pico` is still used for Wi-Fi and, via a temporary `DS18B20Bus` adapter in `main.py`, for DS18B20 sensors until those are migrated.
 
@@ -32,7 +32,7 @@ pico-temperature/
 
 There is no build step. Files are copied directly onto the Pico's MicroPython filesystem (see `README.md` Installation section for the exact file list: `main.py`, `config.py`, the `itk_pico/*.py` files in use, and `kdmp/__init__.py`, `kdmp/log.py`, `kdmp/sensors/*.py`). Before copying changed code to a unit, **bump `VERSION` in `main.py`** — it's sent in every UDP message specifically so units can be identified by firmware version without physically consoling into them (e.g. via a Prometheus label sourced from the UDP collector).
 
-`config.py` holds **per-device** settings, not code version info: Wi-Fi credentials (`SSID`/`PSK`), `LOG_LEVEL`, sensor buses (`ONEWIRE = {"pin": 15}`, where absent means enabled on `GPIO_PIN` and `None` means off; `SHT3X = {...}`, where absent or `None` means off), per-sensor names/offsets/`rh_offset` (`SENSOR` dict, keyed by DS18B20 ROM ID or SHT3x serial), multicast/UDP settings, and IoT feed config (`BASE_URL`/`API_KEY`/`FEED_ID`/`FEED_ENABLED`). Real per-device config also needs `PICO_NAME` (referenced in `main.py` status messages but not present in the template `config.py` — must be added when configuring a physical unit).
+`config.py` holds **per-device** settings, not code version info: Wi-Fi credentials (`SSID`/`PSK`), `LOG_LEVEL`, sensor buses (`ONEWIRE = {"pin": 15}`, where absent means enabled on `GPIO_PIN` and `None` means off; `SHT3X = {...}`, where absent or `None` means off), per-sensor names/offsets/`rh_offset` (`SENSOR` dict, keyed by DS18B20 ROM ID or SHT3x serial), and multicast/UDP settings. Older per-device configs may still contain the removed feed settings (`BASE_URL`, `API_KEY`, `FEED_ID`, `FEED_ENABLED`, `PICO_NAME`). Nothing reads them any more, so they're harmless.
 
 ## Architecture / boot flow
 
@@ -42,7 +42,7 @@ No `boot.py` — MicroPython runs `main.py` on power-up directly.
 2. LED (`Pin("LED", Pin.OUT)`) and hardware watchdog (`WDT(timeout=config.WDT_TIMEOUT_MS)`, or disabled if `WDT_TIMEOUT_MS <= 0`) are initialised.
 3. `build_drivers()` creates only the buses that config enables (`DS18B20Bus` wraps itk_pico's `TemperatureSensor`, which raises if it finds no devices, so the adapter catches that; then `kdmp.sensors.sht3x.SHT3x`). `resolve()` maps each ID to a name and offsets from `config.SENSOR`. The precedence is `SENSOR[id]`, then the driver's fallback `name`, then `SENSOR["default"]`, then `DefaultSensor<n>`.
 4. Initial Wi-Fi connect loop: `wifi.connect(...)` with a bounded `timeout`, retried every 5s on failure (feeding the watchdog between attempts) — never blocks forever.
-5. Main `while True:` loop: feed watchdog → LED on → `wifi.try_reconnect_if_lost(...)` → for each driver, feed the watchdog and call `read()` → multicast one packet per reading (`type: "reading"`) → optional IoTPlotter POST + multicast status (`type: "status"`) → LED off → sleep, chunked into ~1s increments (feeding the watchdog each chunk).
+5. Main `while True:` loop: feed watchdog → LED on → `wifi.try_reconnect_if_lost(...)` → for each driver, feed the watchdog and call `read()` → multicast one packet per reading (`type: "reading"`) → LED off → sleep, chunked into ~1s increments (feeding the watchdog each chunk).
 
 ## Known gotchas (from a field Wi-Fi-hang investigation)
 
@@ -54,16 +54,17 @@ No `boot.py` — MicroPython runs `main.py` on power-up directly.
 
 ## UDP message format
 
-JSON over UDP multicast to `config.MCAST_GROUP:config.UDP_PORT`. There are two message types, and both carry `"version"` (the `VERSION` constant in `main.py`).
+JSON over UDP multicast to `config.MCAST_GROUP:config.UDP_PORT`, one packet per sensor reading, all with `type: "reading"`.
 
-- **`type: "reading"`**: one packet per sensor reading. It carries `model` (`ds18b20` or `sht30`) and `fw` (`os.uname().release`), plus `humidity` (with `rh_offset` applied) when the sensor measures it.
-- **`type: "status"`**: the IoTPlotter feed result.
+- Each packet carries `model` (`ds18b20` or `sht30`), `fw` (`os.uname().release`) and `version` (the `VERSION` constant in `main.py`).
+- `temperature` has `offset` applied. When the sensor measures humidity, the packet also has `humidity` with `rh_offset` applied, plus the `rh_offset` field itself (added in 2.1.0).
+- Values are rounded to 2 dp **after** the offsets are added.
+- Firmware before 2.1.0 also sent `type: "status"` packets with the IoTPlotter feed result. Those are gone.
 
 Firmware older than 2.0.0 sends `type: "temperature"` with no `model`, `humidity` or `fw`, so receivers must accept both types until every unit is upgraded. Consumers depend on `type`, `name`, `temperature` and `version`, so keep those stable from now on.
 
 ```json
-{"type": "reading", "model": "sht30", "name": "LivingRoom", "sensor": "20e80802", "temperature": 22.5, "humidity": 49.9, "offset": -0.5, "fw": "1.24.1", "version": "2.0.0"}
-{"type": "status", "name": "<PICO_NAME>", "status": "API 200 ...", "version": "2.0.0"}
+{"type": "reading", "model": "sht30", "name": "LivingRoom", "sensor": "20e80802", "temperature": 22.5, "humidity": 49.9, "offset": -0.5, "rh_offset": 0.0, "fw": "1.24.1", "version": "2.1.0"}
 ```
 
 ## What NOT to do

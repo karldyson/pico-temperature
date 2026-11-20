@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. Version numbers are the `
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/): a major bump means a breaking change to the packet format or the config.
 
+## [2.1.0] - 2026-11-20
+
+### Removed
+- The IoTPlotter feed. The firmware no longer makes HTTP requests. To send readings to IoTPlotter or any other service, run a receiver that listens for the UDP packets and forwards them.
+- `"type": "status"` packets. They only ever carried the result of the feed's POST request.
+- The `BASE_URL`, `API_KEY`, `FEED_ID`, `FEED_ENABLED` and `PICO_NAME` config settings. Older per-device configs that still contain them load fine, because nothing reads them any more.
+
+### Added
+- An `rh_offset` field in reading packets that carry `humidity`. It matches the existing `offset` field, so receivers can work out the raw humidity.
+
+### Changed
+- `temperature` and `humidity` are rounded to 2 decimal places after the offsets are added. Packets no longer carry float noise like `20.419999999999998`.
+
 ## [2.0.0] - 2026-11-20
 
 ### ⚠️ Breaking
@@ -62,6 +75,7 @@ First versioned release.
   - Optional IoTPlotter feed.
   - Added the README, the Apache 2.0 licence and the `itk_pico` submodule.
 
+[2.1.0]: https://github.com/karldyson/pico-temperature/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/karldyson/pico-temperature/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/karldyson/pico-temperature/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/karldyson/pico-temperature/releases/tag/v1.0.0
