@@ -8,18 +8,30 @@
 #
 # See the LICENSE file for the full text of the license.
 #
-# Last Updated: November 2025
+# Last Updated: November 2026
 #
 
-from itk_pico.temperature import TemperatureSensor
+import config
+from kdmp import log
+
+# Set the log level before anything else logs. "debug" for development
+# with a console attached; "warning" or "off" for production units.
+log.set_level(getattr(config, "LOG_LEVEL", "info"))
+_log = log.get("main")
+
 from itk_pico.wifi import WiFi
 from itk_pico.logger import Logger
+from kdmp.sensors.sht3x import SHT3x
 from time import sleep
 import json
+import os
 import socket
-import config
 import requests
-from machine import Pin, WDT
+from machine import Pin, I2C, WDT
+
+# itk_pico (Wi-Fi) still logs via its own Logger; keep it in step with
+# our level until Wi-Fi handling moves into kdmp.
+Logger.set_enabled(log.get_level() <= log.INFO)
 
 ## Sub routines ##
 
@@ -40,9 +52,9 @@ def multicast(message_dict):
 
 		# send the packet to the network
 		sock.sendto(message, (config.MCAST_GROUP, config.UDP_PORT))
-		Logger.print(f"sent multicast to {config.MCAST_GROUP}:{config.UDP_PORT} :: {message}")
+		_log.debug("sent multicast to %s:%s :: %s", config.MCAST_GROUP, config.UDP_PORT, message)
 	except OSError as e:
-		Logger.print(f"multicast send failed: {e}")
+		_log.warning("multicast send failed: %s", e)
 	finally:
 		if sock is not None:
 			try:
@@ -53,12 +65,107 @@ def multicast(message_dict):
 
 	# end of multicast
 
+
+class DS18B20Bus:
+	"""Temporary adapter giving itk_pico's TemperatureSensor the
+	kdmp.sensors driver interface (ids() / read() -> list of readings).
+	Goes away when DS18B20 support is migrated into kdmp."""
+
+	model = "ds18b20"
+
+	def __init__(self, pin):
+		self._sensor = None
+		try:
+			from itk_pico.temperature import TemperatureSensor
+			self._sensor = TemperatureSensor(pin)
+		except Exception as e:
+			_log.error("1-Wire on GPIO %s: %s", pin, e)
+
+	def ids(self):
+		if self._sensor is None:
+			return []
+		return list(self._sensor.get_device_friendly_names().keys())
+
+	def read(self):
+		if self._sensor is None:
+			return []
+		try:
+			temps = self._sensor.get_temperatures()
+		except Exception as e:
+			_log.error("1-Wire read failed: %s", e)
+			return []
+		readings = []
+		for sensor_id, t in temps.items():
+			if t is None:
+				continue
+			readings.append({"sensor": sensor_id, "model": self.model, "temperature": t})
+		return readings
+
+
+def build_drivers():
+	"""Initialise only the sensor buses config enables.
+	Returns a list of (driver, fallback_name) tuples."""
+	drivers = []
+
+	# 1-Wire: absent => enabled on GPIO_PIN (back-compat); None => disabled
+	onewire = getattr(config, "ONEWIRE", "absent")
+	if onewire == "absent":
+		onewire = {"pin": getattr(config, "GPIO_PIN", 15)}
+	if onewire:
+		_log.info("1-Wire enabled on GPIO %s", onewire["pin"])
+		drivers.append((DS18B20Bus(onewire["pin"]), onewire.get("name")))
+
+	# SHT3x: absent/None => disabled
+	sht = getattr(config, "SHT3X", None)
+	if sht:
+		try:
+			i2c = I2C(sht["i2c"], sda=Pin(sht["sda"]), scl=Pin(sht["scl"]), freq=sht.get("freq", 100000))
+			drv = SHT3x(i2c, addr=sht.get("addr", 0x44), bus=sht["i2c"], model=sht.get("model", "sht30"))
+			drivers.append((drv, sht.get("name")))
+		except Exception as e:
+			_log.error("SHT3x init failed: %s", e)
+
+	if not drivers:
+		_log.warning("No sensors enabled in config")
+	return drivers
+
+
+_resolved = {}
+_default_counter = [0]
+
+def resolve(sensor_id, fallback_name=None):
+	"""Name and offsets for a sensor ID, from config.SENSOR. Precedence:
+	SENSOR[id] > driver fallback name > SENSOR["default"] > DefaultSensor<n>."""
+	if sensor_id in _resolved:
+		return _resolved[sensor_id]
+
+	sensors_cfg = getattr(config, "SENSOR", {})
+	default = sensors_cfg.get("default", {})
+	specific = sensors_cfg.get(sensor_id, {})
+
+	name = specific.get("name") or fallback_name or default.get("name")
+	if not name:
+		_default_counter[0] += 1
+		name = "DefaultSensor%d" % _default_counter[0]
+
+	cfg = {
+		"name": name,
+		"offset": specific.get("offset", default.get("offset", 0.0)),
+		"rh_offset": specific.get("rh_offset", default.get("rh_offset", 0.0)),
+	}
+	_resolved[sensor_id] = cfg
+	_log.info("Sensor %s; Name: %s; Offset: %s; RH offset: %s", sensor_id, cfg["name"], cfg["offset"], cfg["rh_offset"])
+	return cfg
+
 ## Main code ##
 
-# Bump this by hand whenever main.py or a deployed itk_pico/*.py file
-# changes, before redeploying to units. Sent in every UDP message so
-# unit versions can be tracked without consoling into each device.
-VERSION = "1.0.1"
+# Bump this by hand whenever main.py or a deployed itk_pico/*.py or
+# kdmp/*.py file changes, before redeploying to units. Sent in every UDP
+# message so unit versions can be tracked without consoling into each device.
+VERSION = "2.0.0"
+
+# MicroPython release, also sent in every UDP message
+FW = os.uname().release
 
 led = Pin("LED", Pin.OUT)
 
@@ -67,46 +174,27 @@ led = Pin("LED", Pin.OUT)
 # a wedged Wi-Fi driver or any other unforeseen hang.
 if config.WDT_TIMEOUT_MS > 0:
 	wdt = WDT(timeout=config.WDT_TIMEOUT_MS)
-	Logger.print(f"WDT initialised to {config.WDT_TIMEOUT_MS}ms")
+	_log.info("WDT initialised to %sms", config.WDT_TIMEOUT_MS)
 else:
 	wdt = None
-	Logger.print(f"WDT disabled (timeout is {config.WDT_TIMEOUT_MS})")
+	_log.info("WDT disabled (timeout is %s)", config.WDT_TIMEOUT_MS)
 
-# initialise a temperature sensor object
-temperature_sensor = TemperatureSensor(config.GPIO_PIN)
+_log.info("Firmware %s, MicroPython %s", VERSION, FW)
 
-# initialise the sensor config dictionary with friendly names
-sensor_config = temperature_sensor.get_device_friendly_names()
-
-# loop around the sensors
-sensor_counter = 1
-for sensor in sensor_config:
-	Logger.print(f"Initialising sensor {sensor} details...")
-
-	# set them each to the default
-	if "default" in config.SENSOR.keys():
-		sensor_config[sensor]["name"] = config.SENSOR["default"]["name"]
-		sensor_config[sensor]["offset"] = config.SENSOR["default"]["offset"]
-	else:
-		sensor_config[sensor]["name"] = "DefaultSensor" + sensor_counter
-		sensor_config[sensor]["offset"] = 0.0
-		sensor_counter += 1
-
-	# if the sensor has specific settings in the config, use those
-	if sensor in config.SENSOR.keys():
-		if "name" in config.SENSOR[sensor].keys():
-			sensor_config[sensor]["name"] = config.SENSOR[sensor]["name"]
-		if "offset" in config.SENSOR[sensor].keys():
-			sensor_config[sensor]["offset"] = config.SENSOR[sensor]["offset"]
-
-	Logger.print(f"Sensor {sensor}; Name: {sensor_config[sensor]['name']}; Offset: {sensor_config[sensor]['offset']}")
+# initialise the enabled sensor drivers and resolve names/offsets for
+# every sensor found (check the log on first boot for IDs to add to
+# config.SENSOR)
+drivers = build_drivers()
+for driver, fallback_name in drivers:
+	for sensor_id in driver.ids():
+		resolve(sensor_id, fallback_name)
 
 # Initialise the WiFi
 wifi = WiFi()
 
 # Connect to the WiFi
 while not wifi.connect(config.SSID, config.PSK, timeout=config.WIFI_CONNECT_TIMEOUT, wdt=wdt):
-	Logger.print("Initial connect failed, retrying...")
+	_log.warning("Initial connect failed, retrying...")
 	sleep(5)
 	if wdt is not None:
 		wdt.feed()
@@ -114,16 +202,16 @@ while not wifi.connect(config.SSID, config.PSK, timeout=config.WIFI_CONNECT_TIME
 # Initialise the feed URL
 if hasattr(config, "BASE_URL") and config.BASE_URL and hasattr(config, "FEED_ID") and config.FEED_ID:
 	feed_url = config.BASE_URL + config.FEED_ID
-	Logger.print("Feed URL:", feed_url)
+	_log.info("Feed URL: %s", feed_url)
 else:
 	FEED_ENABLED = False
-	Logger.print("No feed details, disabling feed")
+	_log.info("No feed details, disabling feed")
 
 # Initialise the API headers
 headers = {'api-key': config.API_KEY}
 
 # ...and start the main loop
-Logger.print("Starting main loop...")
+_log.info("Starting main loop...")
 while True:
 	if wdt is not None:
 		wdt.feed()
@@ -134,58 +222,56 @@ while True:
 	# Check we're still connected to the wifi...
 	wifi.try_reconnect_if_lost(timeout=config.WIFI_CONNECT_TIMEOUT, wdt=wdt)
 
-	# Loop through the sensors getting the current temperatures
-	sensors = temperature_sensor.get_temperatures()
-
 	# Initialise the API payload dictionary
 	payload = {}
 	payload["data"] = {}
 
-	# Loop through each of the sensors
-	for sensor in sensors:
+	for driver, fallback_name in drivers:
+		if wdt is not None:
+			wdt.feed()
 
-		# get the friendly name and the fudge factor from the config
-		sensor_name = sensor_config[sensor]["name"]
-		sensor_offset = sensor_config[sensor]["offset"]
+		for reading in driver.read():
+			sensor_id = reading["sensor"]
+			cfg = resolve(sensor_id, fallback_name)
 
-		# apply the fudge factor to the received temperature value
-		temperature = sensors[sensor]
-		temperature = temperature + sensor_offset
+			# apply the fudge factor(s) to the received values
+			temperature = reading["temperature"] + cfg["offset"]
 
-		# ...some debug output
-		Logger.print(f"Sensor: {sensor}; Name: {sensor_name}; Offset: {sensor_offset}; Temp: {temperature}")
+			message_dict = {"type": "reading", "model": reading["model"], "name": cfg["name"], "sensor": sensor_id, "temperature": temperature, "offset": cfg["offset"], "fw": FW, "version": VERSION}
 
-		# create the UDP message dictionary
-		message_dict = {"type": "temperature", "name": sensor_name, "sensor": sensor, "temperature": temperature, "offset": sensor_offset, "version": VERSION}
+			if "humidity" in reading:
+				message_dict["humidity"] = reading["humidity"] + cfg["rh_offset"]
 
-		# and multicast it
-		multicast(message_dict)
+			_log.debug("Sensor: %s; Name: %s; Temp: %s; RH: %s", sensor_id, cfg["name"], temperature, message_dict.get("humidity"))
 
-		# add to API payload
-		payload["data"][sensor_name] = []
-		payload["data"][sensor_name].append({"value": '{0:.2f}'.format(sensors[sensor])})
+			# and multicast it
+			multicast(message_dict)
+
+			# add to API payload
+			payload["data"][cfg["name"]] = []
+			payload["data"][cfg["name"]].append({"value": '{0:.2f}'.format(reading["temperature"])})
 
 	# if the feed is enabled, send the payload to the API endpoint
 	if config.FEED_ENABLED:
 
 		feed_url = "http://iotplotter.com/api/v2/feed/" + config.FEED_ID
-		Logger.print(f"Feed URL is {feed_url}")
+		_log.debug("Feed URL is %s", feed_url)
 
 		json_payload = json.dumps(payload)
-		Logger.print(f"JSON payload is |{json_payload}|")
+		_log.debug("JSON payload is |%s|", json_payload)
 
 		try:
 			response = requests.post(feed_url, headers=headers, data=json.dumps(payload), timeout=5)
-			Logger.print(f"API response: {response.status_code} {response.text}")
+			_log.info("API response: %s %s", response.status_code, response.text)
 			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API {response.status_code} {response.text}", "version": VERSION}
 		except:
-			Logger.print("Exception occurred in API call")
+			_log.warning("Exception occurred in API call")
 			message_dict = {"type": "status", "name": config.PICO_NAME, "status": f"API Exception", "version": VERSION}
 		finally:
 			multicast(message_dict)
 
 	# ...and sleep
-	Logger.print(f"Sleeping for {config.SLEEP} seconds")
+	_log.debug("Sleeping for %s seconds", config.SLEEP)
 	led.off()
 	# Sleep in small increments, feeding the watchdog each time, since
 	# config.SLEEP may exceed the hardware watchdog's max timeout.
