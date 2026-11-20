@@ -1,13 +1,12 @@
 # Pico Temperature Monitor
 
-A Raspberry Pi Pico-based temperature monitoring system that reads from DS18B20 temperature sensors and/or SHT3x temperature + humidity sensors and broadcasts the data via UDP multicast. Optionally sends data to IoT feed services like IoTPlotter.
+A Raspberry Pi Pico-based temperature monitoring system that reads from DS18B20 temperature sensors and/or SHT3x temperature + humidity sensors and broadcasts the data via UDP multicast. To log or graph the data in a service such as IoTPlotter, Prometheus or a database, run a receiver on the network that listens for the UDP packets and forwards them.
 
 ## Features
 
 - **Multi-sensor support**: Automatically detects and reads from multiple DS18B20 temperature sensors
 - **WiFi connectivity**: Connects to WiFi networks with automatic reconnection
 - **UDP multicast**: Broadcasts sensor readings (temperature, and humidity where measured) to the local network
-- **IoT integration**: Optional integration with IoTPlotter for data logging
 - **Configurable sensors**: Custom names and calibration offsets for each sensor
 - **Humidity**: Optional SHT3x (SHT30/31/35) temperature + humidity probe over I2C
 - **Log levels**: Verbose console output for development, quiet in production
@@ -107,17 +106,6 @@ Only the buses that are configured are initialised, so an SHT3x-only unit should
 LOG_LEVEL = "info"   # "debug" with a console attached; "warning" or "off" in production
 ```
 
-### IoT Feed Integration (Optional)
-
-To enable IoT feed logging:
-
-```python
-BASE_URL = "http://iotplotter.com/api/v2/feed/"
-API_KEY = "your-api-key"
-FEED_ID = "your-feed-id"
-FEED_ENABLED = True
-```
-
 ## Usage
 
 1. Upload files to your Pico
@@ -125,9 +113,8 @@ FEED_ENABLED = True
 3. The system will:
    - Scan for the configured sensors (DS18B20 and/or SHT3x)
    - Connect to WiFi
-   - Start reading temperatures every 10 seconds (configurable)
+   - Read the sensors every 10 seconds (configurable)
    - Send data to the network via UDP multicast
-   - Optionally send data to IoT Plotter API
 
 ## Data Format
 
@@ -142,16 +129,20 @@ The system sends one JSON message per sensor reading via UDP multicast:
   "temperature": 22.5,
   "humidity": 49.9,
   "offset": -0.5,
+  "rh_offset": 0.0,
   "fw": "1.24.1",
-  "version": "2.0.0"
+  "version": "2.1.0"
 }
 ```
 
 - `type`: `"reading"`. Firmware older than 2.0.0 sends `"temperature"` and has no `model`, `humidity` or `fw` fields.
 - `model`: `"ds18b20"` or `"sht30"`
-- `humidity`: Only present for sensors that measure it, with `rh_offset` applied
+- `temperature` / `humidity`: With the configured offsets applied, rounded to 2 decimal places. `humidity` is only present for sensors that measure it.
+- `offset` / `rh_offset`: The offsets that were applied, so a receiver can recover the raw values. `rh_offset` is only present alongside `humidity` (from 2.1.0).
 - `fw`: MicroPython release (`os.uname().release`)
 - `version`: Firmware version (`VERSION` in `main.py`)
+
+Firmware before 2.1.0 also sent `"type": "status"` packets carrying IoTPlotter feed results. Those are gone now that the feed has been removed.
 
 ## Network Configuration
 
