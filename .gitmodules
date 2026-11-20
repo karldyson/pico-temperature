@@ -1,3 +1,6 @@
 [submodule "itk_pico"]
 	path = itk_pico
 	url = https://github.com/karldyson/itk_pico
+[submodule "kdmp"]
+	path = kdmp
+	url = https://github.com/karldyson/kdmp.git
