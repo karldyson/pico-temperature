@@ -19,7 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 ### Notes
 - The receiver (`prometheus_temperature_exporter`) needs a `co2` gauge to export CO2.
-- Requires the kdmp version that adds `kdmp/sensors/scd4x.py` and `SensorDriver.quantities`; copy the updated `kdmp/sensors/*.py` to units.
+- Requires kdmp 0.2.0 (`v0.2.0`), which adds `kdmp/sensors/scd4x.py` and `SensorDriver.quantities`; copy the updated `kdmp/sensors/*.py` to units.
 
 ## [2.1.0] - 2026-11-20
 
@@ -92,6 +92,7 @@ First versioned release.
   - Optional IoTPlotter feed.
   - Added the README, the Apache 2.0 licence and the `itk_pico` submodule.
 
+[3.0.0]: https://github.com/karldyson/pico-temperature/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/karldyson/pico-temperature/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/karldyson/pico-temperature/compare/v1.0.1...v2.0.0
 [1.0.1]: https://github.com/karldyson/pico-temperature/compare/v1.0.0...v1.0.1
