@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. Version numbers are the `
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/): a major bump means a breaking change to the packet format or the config.
 
+## [3.0.0] - 2026-11-25
+
+### ⚠️ Breaking
+- `temperature` is no longer in every reading packet. A packet now carries only the quantities its sensor publishes, and an SCD4x packet carries only `co2` by default. Receivers must skip quantities a packet doesn't contain. With no `publish` setting, DS18B20 and SHT3x packets are exactly as before.
+
+### Added
+- SCD4x (SCD40/41/43) CO2 sensor over I2C, set up with the `SCD4X` config dict. It runs in periodic mode, so reads never block. Its ID is the 48-bit serial and its model is read from the sensor. Optional `temperature_offset` and `altitude` are written to the sensor at boot and never stored on it. It re-initialises itself after repeated read failures.
+- A `co2` field (int, ppm) in reading packets.
+- A per-sensor `publish` list in `SENSOR` that chooses which of `temperature`, `humidity` and `co2` go in that sensor's packets. Defaults by model: DS18B20 → temperature; SHT3x → temperature + humidity; SCD4x → co2. Every measured value is still logged at debug level.
+- A boot-time location check: a `name` is a location, and each quantity at a location must come from exactly one sensor. Clashes are logged as errors (both sensors keep sending), and each location's sources are logged at info level.
+- README glossary of unit, sensor, location, measurement and reading, shared word for word with the receiver's README.
+- Sensors on the same I2C controller share one bus. Configuring one controller on two different pin pairs logs an error and skips the second sensor.
+
+### Notes
+- The receiver (`prometheus_temperature_exporter`) needs a `co2` gauge to export CO2.
+- Requires the kdmp version that adds `kdmp/sensors/scd4x.py` and `SensorDriver.quantities`; copy the updated `kdmp/sensors/*.py` to units.
+
 ## [2.1.0] - 2026-11-20
 
 ### Removed
